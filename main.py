@@ -306,7 +306,7 @@ class Vector(object):
 					pairIneqs.append({'x1':i1, 'x2':i2, 'k1':k1, 'k2':k2, 'k0':k0})
 
 # ********************** MAIN ***********************
-def main(fileName, digits, print_stats=False):
+def main(fileName, digits=list(range(1,10)), print_stats=False):
 	minDigit = digits[0] # least attainable value of cell (= 1)
 	maxDigit = digits[-1] # "" highest "" (=9)
 	digRange = maxDigit - minDigit + 1
@@ -463,7 +463,5 @@ def main(fileName, digits, print_stats=False):
 		print('Total time in numerical computation = {:.4}'.format(tNC))
 		print('Total time = {:.4}'.format(tt))
 
-# Globals
-fileName = r'Problems\easy2.csv'
-digits = list(range(1,10))
-# main(fileName, digits, print_stats=True)
+# Uncomment to see the code in action
+# main(fileName = r'Problems\easy2.csv', print_stats=True)
