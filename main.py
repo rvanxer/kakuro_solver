@@ -466,4 +466,4 @@ def main(fileName, digits, print_stats=False):
 # Globals
 fileName = r'Problems\easy2.csv'
 digits = list(range(1,10))
-main(fileName, digits, print_stats=True)
+# main(fileName, digits, print_stats=True)
