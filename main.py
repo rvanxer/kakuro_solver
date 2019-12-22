@@ -1,467 +1,298 @@
+"""written: Wed, 2019-11-06 14:53:38, author: Rajat Verma
+
+Kakuro puzzle solver: This program first uses multiple simple tricks to shrink 
+the possible "pool" of values each cell can attain. If it cannot
+get the result then, it uses a pseudo-brute force approach to try as many 
+feasible combinations as possible. Correct solution is not always guaranteed.
+
+Usage: either instantiate a `Problem` by providing the path of the CSV file
+of the puzzle (see examples for the format) or uncomment last line to try"""
+
+import logging
+from time import time
+from itertools import groupby, combinations, product
+from operator import itemgetter
 import csv
-import sympy
-import itertools
-import time
 import numpy as np
+import matplotlib.pyplot as plt
 
-def importData(fileName):
-	mat = []
-	with open(fileName) as file:
-		reader = csv.reader(file)
-		for row in reader:
-			row2 = []
-			for elem in row:
-				if elem == '':
-					elem = 0
-				if elem == 'x':
-					elem = -1
-				try:
-					elem = int(elem)
-				except ValueError:
-					elem = elem
-				if isinstance(elem,str) and '\\' in elem:
-					elem = elem.split('\\')
-					for i,e in enumerate(elem):
-						if e == '':
-							elem[i] = -1
-						else:
-							elem[i] = int(e)
-				row2.append(elem)
-			mat.append(row2)
-	return mat
-
-def print_mat(mat):
-	"""Displays the current state of the main problem matrix, i.e. trial cell values"""
-	# print('***********************')
-	for r in mat: # r = row
-		R = []
-		for c in r: # c = cell
-			if c.editable:
-				R.append('{:2}'.format(int(c.trialVal)))
-			else:
-				R.append('{:2}'.format(' .'))
-		R = ' '.join(R)
-		print(R)
-	print('*****************************')
-
-# ****************** CELL class ******************
+# *****************************************************************************
 class Cell(object):
-	def __init__(self,mat,i,j):
-		# self.data = mat
-		self.i = i
-		self.j = j
-		self.defVal = mat[i][j] if mat[i][j] != -1 else None
-		self.val = 0 # actual symbolic/numerical value
-		self.blank = True # if self.val == 0
-		self.trialVal = 0
-		self.editable = True if self.defVal == 0 else False
-		self.sumBlock = True if isinstance(mat[i][j],list) else False
+    def __init__(self, i, j, digits=(0)):
+        self.i, self.j = i, j
+        self.loc = (i, j)
+        self.val = 0
+        self.final = False
+        self.pool = set(digits)
+        self.vects = {}
 
-	def __repr__(self):
-		return 'cell(%d,%d)' % (self.i+1,self.j+1)
+    def __repr__(self):
+        return '<%d,%d>' % (self.i+1, self.j+1)
 
-	def make_row(self,mat):
-		"""Returns the constituent row of an editable cell of a given matrix"""
-		i, j = self.i, self.j
-		if self.editable:
-			start, end, sr = -1, -1, 0 # sr = row sum
-			while True:
-				j -= 1 # move 1 cell left
-				# if cell is at left end of matrix OR left neighbour (j--) is uneditable
-				if j == -1 or not A[i][j].editable:
-					start = j+1
-					sr = mat[i][j][1]
-					break
-			while True:
-				j += 1 # move 1 cell right
-				# if cell is at right end of matrix OR right neighbour is uneditable
-				if j == len(mat[0]) or not A[i][j].editable: 
-					end = j-1
-					break
-			row = Vector([(i,start),(i,end)])
-			row.Sum = sr
-			return row
-		return None
+    def deterministic_solve(self):
+        """Solve self and its neighbors recursively if its pool size is 1"""
+        if len(self.pool) == 1 and not self.final:
+            self.val = list(self.pool)[0]
+            self.final = True
+            for v in self.vects.values():
+                v.total -= self.val
+                for c in v.cells():
+                    c.pool.discard(self.val)
 
-	def make_col(self,mat):
-		"""Returns the editable column of an editable cell of a given matrix"""
-		i, j = self.i, self.j
-		if self.editable:
-			start, end, sc = -1, -1, 0 # sc = column sum
-			while True:
-				i -= 1 # move 1 cell up
-				if i == -1 or not A[i][j].editable:
-					start = i+1
-					sc = mat[i][j][0]
-					break
-			while True:
-				i += 1 # move 1 cell down
-				if i == len(mat) or not A[i][j].editable:
-					end = i-1
-					break
-			col = Vector([(start,j),(end,j)])
-			col.Sum = sc
-			if col not in Cols:
-				Cols.append(col)
-			return col
-		return None
-
-	def neighbour(self,direction):
-		try:
-			if 		direction == 'left': 	X = A[self.i][self.j-1]
-			elif 	direction == 'right': 	X = A[self.i][self.j+1]
-			elif 	direction == 'up':		X = A[self.i-1][self.j]
-			elif 	direction == 'down':	X = A[self.i+1][self.j]
-			return X
-		except Exception as e: 
-			# print(e)
-			return None
-
-	def populate(self,nx):
-		"""Main function for filling a cell with symbolic expressions (1st step of algo)"""
-		directions = ['right','down','left','up']
-		if self.editable:
-			if self.blank:
-				if all([not self.calc_expr(d) for d in directions]):
-					x = sympy.Symbol('x%d' % (nx+1)) # create a new variable
-					self.val = x # store this first sym var as a new variable in the cell val
-					Vars[x] = {'bounds':[]}
-					nx += 1 # nx = no. of assigned vars from sym var list
-					self.blank = False
-			for direction in directions:
-				child = self.neighbour(direction)
-				if child:
-					child.calc_expr(direction)
-		return nx
-
-	def calc_expr(self,direction):
-		"""Calculate the cell value (symbolic expression) in terms of row/col member variables
-		If value cannot be calculated right now, return False, else True"""
-		if self.editable and self.blank:
-			if direction in ['left','right']:
-				rowCells = self.row.cells[:]
-				rowCells.remove(self)				
-				if rowCells and any([x.val == 0 for x in rowCells]): # if any other row member is blank
-					return False
-				elif self.blank:
-					self.val = self.row.Sum - sum([x.val for x in rowCells]) # applying the equation rule
-					self.blank = False
-					return True
-			elif direction in ['up','down']:
-				colCells = self.col.cells[:]
-				colCells.remove(self)
-				if colCells and any([x.val == 0 for x in colCells]):
-					return False
-				elif self.blank:
-					self.val = self.col.Sum - sum([x.val for x in colCells])
-					self.blank = False
-					return True
-		return False
-
-	def get_bounds(self):
-		"""Returns the limits of possible values of the vars in cell value"""
-		var = self.val.free_symbols # returns the sym vars contained in cell value
-		if len(var) == 1: # if the cell contains only one sym var
-			lim1 = sympy.solve(self.val - digits[0],var,simplify=False,rational=False)[0]
-			lim2 = sympy.solve(digits[-1] - self.val,var,simplify=False,rational=False)[0]
-			bounds = [min([lim1,lim2]),max([lim1,lim2])]
-			# print('%s: |%s|: %s =' % (self,self.val,list(var)[0]),bounds)
-			self.var = list(var)[0]
-			self.bounds = bounds
-			return self.var, bounds
-		return False, False
-
-	def get_coeffs(self):
-		"""Create a list of var coefficients from cell value expression"""
-		if self.editable:
-			coeffs = [0]*(nx+1) # blank coeff array (default 0)
-			vars_ = list(self.val.free_symbols)
-			k0 = int(self.val.evalf(subs={var: 0 for var in vars_}))
-			coeffs[0] = k0
-			for var in vars_:
-				i = list(Vars.keys()).index(var) # index of current var in the varList
-				k = int(self.val.coeff(var)) # coeff of current var in cell value
-				coeffs[i+1] = k # i+1 because 1st coeff is constant
-			coeffs = np.array(coeffs)
-			self.coeffs = coeffs
-
-	def try_sol(self,trialVals):
-		"""Put values obtained from 'trial' dict or 'vals' list into cell value expression"""
-		if self.editable:
-			# vars_ = self.val.free_symbols # set of sym vars in the cell value expr
-		# Method 1: evaluating with normal sympy
-			# subs = {var: trial[var] for var in vars_}
-			# val = int(self.val.evalf(subs=subs)) # num value after putting trial var values
-		# Method 2: evaluating with numpy & lambdify
-			# f = sympy.lambdify(tuple(vars_),self.val,'numpy')
-			# val = f(*tuple([trial[var] for var in vars_]))
-		# Method 3: using coeffs array
-			K = self.coeffs[1:]
-			k0 = self.coeffs[0] # the constant
-			# val = sum([a*b for a,b in zip(K,trialVals)]+[k0])
-			val = int(np.dot(K,trialVals)) + k0
-			self.trialVal = val
-
-	def check_sol(self):
-		"""Chekcing if the current cell trial val is the right solution.
-		Using design constraints (inequalities & inequations) to discard faulty results"""
-		if self.editable:
-			rowVals = [cell.trialVal for cell in self.row.cells] # trial vals of row members
-			colVals = [cell.trialVal for cell in self.col.cells]
-			if any([val==0 for val in rowVals+colVals]): # if any row/col member is blank
-				return True
-			if any([val not in digits for val in rowVals+colVals]): # any value not in [1,9]
-				return False
-			if len(rowVals) != len(set(rowVals)): # duplicates found in row
-				return False
-			if len(colVals) != len(set(colVals)):
-				return False
-			if sum(rowVals) != self.row.Sum or sum(colVals) != self.col.Sum:
-				return False
-			# return self.trialVal
-			return True
-
-# ******************** VECTOR class *****************
+# *****************************************************************************
 class Vector(object):
-	def __init__(self,coords):
-		self.xy = xy = coords
-		self.isRow = xy[0][0] == xy[1][0]
-		self.isCol = xy[0][1] == xy[1][1]
-		self.Sum = 0
-		self.get_cells()
+    def __init__(self, id, cells, type, total):
+        self.id = id # not a unique identifier but a serial num
+        self.type = type # type is either 'row' or 'col'
+        self.origCells = cells
+        self.origTotal = total # original total
+        self.total = total # effective total
+        for c in self.cells():
+            c.vects[self.type] = self
 
-	def __repr__(self):
-		xy = self.xy
-		if self.isRow:
-			return 'row(%d,%d:%d)' % (xy[0][0]+1,xy[0][1]+1,xy[1][1]+1)
-		elif self.isCol:
-			return 'col(%d:%d,%d)' % (xy[0][0]+1,xy[1][0]+1,xy[1][1]+1)
-		elif self.isRow and self.isCol:
-			return 'cell(%d,%d)' % (xy[0][0]+1,xy[1][1]+1)
-		else:
-			return '--'
+    def __repr__(self):
+        return '%s%d<%d,%d>' % (self.type[0].upper(), self.id,
+            self.origCells[0].i + 1, self.origCells[0].j + 1)
 
-	def __eq__(self,other):
-		return self.xy == other.xy
+    def cells(self): # effective cells, i.e., those that are not final
+        return [c for c in self.origCells if not c.final]
 
-	def get_cells(self):
-		self.cells = []
-		if self.isRow:
-			i = self.xy[0][0]
-			jStart = self.xy[0][1]
-			jEnd = self.xy[1][1]
-			for j in range(jStart,jEnd+1):
-				self.cells.append(A[i][j])
-			for cell in self.cells:
-				cell.row = self
-		elif self.isCol:
-			j = self.xy[1][1]
-			iStart = self.xy[0][0]
-			iEnd = self.xy[1][0]
-			for i in range(iStart,iEnd+1):
-				self.cells.append(A[i][j])
-			for cell in self.cells:
-				cell.col = self
+    def length(self): # effective length
+        return len(self.cells())
 
-	def one_var_ineq(self):
-		"""Reduce possible values of vector cells by using the concept that 
-		vector-wise pair values cannot be equal (e.g 'a'!='8-a')"""
-		pairs = itertools.combinations(self.cells,2)
-		for pair in pairs:
-			expr1, expr2 = pair[0].val, pair[1].val
-			vars1, vars2 = expr1.free_symbols, expr2.free_symbols
-			if vars1 == vars2 and len(vars1) == 1: # handling only one-var inequations
-				var = list(vars1)[0]
-				val = sympy.solve(expr1 - expr2,var)[0]
-				if val == int(val): # if value to be removed is an integer
-					if val in Vars[var]['possibles']:
-						Vars[var]['possibles'].remove(val)
+    def feasible_combs(self):
+        """Get the list of all feasible combinations of self"""
+        return [f for f in product(*(c.pool for c in self.cells())) if
+                sum(f) == self.total and len(set(f)) == len(f)]
 
-	def two_var_ineq(self):
-		"""Make pairs of variables whose difference cannot be some specified difference
-		Type I: where two vars are just themselves (i.e. coeff = 1 & const = 0) [a != b]
-		Type II: where both vars have +ve coeffs and a specified difference [a - b != k]
-		Type III: where var coeffs can be +1 or -1 [k1*a + k2*b + k0 != 0]"""
-		pairs = itertools.combinations(self.cells,2)
-		varList = list(Vars.keys())
-		for pair in pairs:
-			expr1, expr2 = pair[0].val, pair[1].val
-			var1, var2 = expr1.free_symbols, expr2.free_symbols
-			if len(var1) == len(var2) == 1: # if each expr contains just one var
-				var1 = list(var1)[0]
-				var2 = list(var2)[0]
-				if var1 != var2: # if the two variable sets are not the same
-					i1 = varList.index(var1) # index of var1 in main varList
-					i2 = varList.index(var2)
-					k1 = int(expr1.coeff(var1)) # coeff of var1 (+1/0/-1)
-					k2 = int(expr2.coeff(var2))
-					k0 = int((expr1-expr2).evalf(subs={var1:0, var2:0})) # constant
-			# Type I treatment: a != b
-					# if k1 == k2 == 0:
-					# 	pairIneqs.append((varList.index(var1),varList.index(var2)))
-			# Type II treatment: a - b != k
-					# if k1 == k2 == 1: # if each var's coeff. is 1 (e.g.'a-4', but not '5-a')
-					# 		pairIneqs.append((i1,i2,-1*k0))
-			# Type III treatment: k1*a + k2*b + k0 != 0
-					pairIneqs.append({'x1':i1, 'x2':i2, 'k1':k1, 'k2':k2, 'k0':k0})
+    def filter_poolmap(self, poolmap):
+        """Filter the pools of self k cells using the poolmap of the problem"""
+        if self.length() > 0:
+            feasiblePool = poolmap[self.length()][self.total]
+            for c in self.cells():
+                c.pool = c.pool.intersection(feasiblePool)
 
-# ********************** MAIN ***********************
-def main(fileName, digits=list(range(1,10)), print_stats=False):
-	minDigit = digits[0] # least attainable value of cell (= 1)
-	maxDigit = digits[-1] # "" highest "" (=9)
-	digRange = maxDigit - minDigit + 1
+    def solve_tup1(self):
+        """For size-1 vector, solve it deterministically"""
+        if self.length() == 1:
+            self.cells()[0].pool = {self.total}
+            self.cells()[0].deterministic_solve()
 
-	t0 = time.clock()
-	t1 = time.clock()
-	print('Puzzle',fileName.capitalize().split('.')[0])
-	# Creating the main data & cell object arrays
-	data = importData(fileName)
-	N = len(data)
-	A = [] 	# 2D list of cell objects
-	for i in range(N):
-		row = []
-		for j in range(N):
-			row.append(Cell(data,i,j))
-		A.append(row)
+    def complement_tup2(self):
+        """Filter pools of size-2 vectors so that they complement each other"""
+        if self.length() == 2:
+            for i, c in enumerate(self.cells()):
+                complement = {self.total - j for j in self.cells()[i-1].pool}
+                c.pool = c.pool.intersection(complement)
 
-	# Creating the rows & cols of editables
-	Rows = [] # list of row (vector) objects
-	Cols = [] # "" col ""
-	for i in range(N):
-		for j in range(N):
-			R = A[i][j].make_row(data)
-			if R and R not in Rows: 
-				Rows.append(R)
-			C = A[i][j].make_col(data)
-			if C and C not in Cols: 
-				Cols.append(C)
+    def min_max_check(self):
+        """Check for each cell if its pool values satisfy the vector sum 
+        within bounds (very loose check)"""
+        for cell in self.cells():
+            minVals = [min(c.pool) for c in self.cells() if c != cell]
+            maxVals = [max(c.pool) for c in self.cells() if c != cell]
+            for val in list(cell.pool):
+                remainder = self.total - val
+                if remainder < sum(minVals) or remainder > sum(maxVals):
+                    cell.pool.discard(val)
 
-	# Working with symbolic expressions
-	nx = 0 # no. of generated & assigned sym vars
-	Vars = {} # main sym var container
-	flatList = [j for i in A for j in i] # 1D (flattened) list of A
-	for cell in flatList:
-		nx = cell.populate(nx) # filling cells with sym vars
-	for cell in flatList:
-		cell.get_coeffs() # getting coeff. of vars in cell value expression
+    def paired_uncertainty(self):
+        """If two of self k cells have size-2 pool, then remove these values
+        from pools of other self k cells"""
+        if self.length() > 2:
+            pools = [c.pool for c in self.cells()]
+            counts = [pools.count(p) for p in pools]
+            idx = [i for i, x in enumerate(counts) if x==2] # ids for 2-pools
+            if len(idx) == 2:
+                p = pools[idx[0]] # pool values to be discarded
+                if len(p) == 2:
+                    for i, c in enumerate(self.cells()):
+                        if i not in idx:
+                            for val in p:
+                                c.pool.discard(val)
 
-	# Getting bounds of variables from each cell
-	for cell in flatList:
-		if not cell.blank:
-			var, bounds = cell.get_bounds()
-			if var:
-				Vars[var]['bounds'].append(bounds)
+# *****************************************************************************
+class Problem(object):
+    def __init__(self, file, digits=list(range(1,10)), nTryVect=-1, 
+                 logFile='logger.log'):
+        self.time = {'start': time()}
+        self.file = file
+        self.digits = digits
+        self.logFile = logFile
+        self.solved = False
+        # pre-processing
+        self.configure_logging()
+        self.set_poolmap()
+        self.import_data()
+        # main solving
+        self.solve(firstTime=True)
+        if not self.solved:
+            self.try_solve(nTryVect)
+            
+    def __repr__(self):
+        return 'Problem<"%s">' % self.file.split('/')[-1]
+            
+    def configure_logging(self):
+        logging.basicConfig( filename=self.logFile, level=logging.INFO,
+            filemode='w', format='%(levelname)s: %(message)s' )
 
-	# Getting possible values of each variable overall
-	for key,val in Vars.items():
-		lowLim = max([x[0] for x in val['bounds']])
-		upLim = min([x[1] for x in val['bounds']])
-		size = upLim - lowLim + 1
-		# print(key,':',[lowLim,upLim],size)
-		Vars[key]['possibles'] = list(range(lowLim,upLim+1))
+    def set_poolmap(self):
+        """Given a set of allowable digits, store in a dict all the possibile 
+        unordered sets of values a vector of size n & total s can achieve"""
+        A = {} # dict of allowable pools
+        for n in self.digits:
+            A[n] = {}
+            for comb in combinations(self.digits, n):
+                s = sum(comb)
+                if len(set(comb)) == n:
+                    if s not in A[n].keys():
+                        A[n][s] = set(comb)
+                    else:
+                        A[n][s] = A[n][s].union(set(comb))
+        self.poolmap = A
 
-	# Removing one-variable inequations within rows & cols and
-	# reducing two-variable interdependencies
-	pairIneqs = []
-	for vector in Rows + Cols:
-		vector.one_var_ineq() # modifies ['possibles'] in Vars{}
-		vector.two_var_ineq()
+    def import_data(self):
+        """Read the problem CSV into a matrix, cell list & vector list"""
+        self.mat = []
+        self.cells = []
+        self.rows, self.cols = [], []
+        with open(self.file) as f:
+            for i, line in enumerate(csv.reader(f)):
+                row = []
+                for j, val in enumerate(line):
+                    if val == '':
+                        c = Cell(i, j, self.digits)
+                        row.append(c)
+                        self.cells.append(c)
+                    elif val == 'x':
+                        row.append(None)
+                    elif '\\' in val:
+                        left, right = val.split('\\')
+                        left = int(left) if left != '' else 0
+                        right = int(right) if right != '' else 0
+                        row.append((left, right, val))
+                self.mat.append(row)
+        for i, row in enumerate(self.mat):
+            colIdx = [c.j for c in row if isinstance(c, Cell)]
+            for k, g in groupby(enumerate(colIdx), lambda x: x[0]-x[1]):
+                J = list(map(itemgetter(1), g)) # column IDs
+                cells = [self.mat[i][j] for j in J]
+                rowSum = self.mat[i][J[0]-1][1]
+                rowObj = Vector(len(self.rows), cells, 'row', rowSum)
+                self.rows.append(rowObj)
+        for j, col in enumerate(map(list, zip(*self.mat))):
+            rowIdx = [c.i for c in col if isinstance(c, Cell)]
+            for k, g in groupby(enumerate(rowIdx), lambda x: x[0]-x[1]):
+                I = list(map(itemgetter(1), g)) # row IDs
+                cells = [self.mat[i][j] for i in I]
+                colSum = self.mat[I[0]-1][j][0]
+                colObj = Vector(len(self.cols), cells, 'col', colSum)
+                self.cols.append(colObj)
+        self.vects = self.rows + self.cols
+        self.time['import_data'] = time() - self.time['start']
 
-	# Compare effectiveness of this algo
-	ranges = [v['possibles'] for v in Vars.values()]
-	rangeSizes = [len(item) for item in ranges]
-	nComb = np.prod(rangeSizes, dtype=np.int64)
-	# totalComb = digRange**len(Vars.keys()) # total initial combs,i.e. 9^(#vars)
-	print('nEdit = {}, nVars = {}, nComb = {:,}'.format(
-		len([a for a in flatList if a.editable]),len(Vars),nComb))
+    def save_state(self):
+        """Save current problem state (set of values of cells and vects)"""
+        self.state = {'vects': [(v.cells, v.total) for v in self.vects],
+            'cells': [(c.final, c.val, c.pool.copy()) for c in self.cells]}
 
-	tPre = time.clock() -t1
+    def reset_state(self):
+        """Restore the problem state to the state after the first solve()"""
+        for i in range(len(self.cells)):
+            final, val, pool = self.state['cells'][i]
+            self.cells[i].final = final
+            self.cells[i].val = val
+            self.cells[i].pool = pool
+        for i in range(len(self.vects)):
+            cells, total = self.state['vects'][i]
+            self.vects[i].cells = cells
+            self.vects[i].total = total
 
-	# ***************************************
-	# Solve different combinations (hit & trial numerical computation)
-	comb = (itertools.product(*ranges)) # generator for a particular combination
-	tOp = 0 	# time of each 1% completion of operations
-	tPerc = 0.  # time taken in calculating % completed
-	t2var = 0. 	# time taken in removing 2-var expression pairs (e.g. a-4 != 3+b)
-	tNext = 0.  # time taken in calculating next combination through generator
-	tTry = 0. 	# time taken in calculating trial values from coeffs & combi/ns
-	tCheck = 0. # time taken in checking each matrix combination
-	n2var = 0 	# no. of combi/ns trashed due to simult. equality of 2-var expr/ns
-	perc = 0 	# percentage operations completed
-	flatList = [j for i in A for j in i]
+    def print_state(self):
+        """Print the current problem state as a matrix (heatmap chart)"""
+        A = self.mat
+        result = np.zeros((len(A), len(A)), np.int8)
+        fig, ax = plt.subplots(figsize=(8,8))
+        params = {'ha': 'center', 'va': 'center'}
+        for i, row in enumerate(A):
+            for j, elem in enumerate(row):
+                if elem is None:
+                    result[i, j] = -1
+                elif isinstance(elem, Cell):
+                    result[i, j] = elem.val
+                    if elem.final:
+                        ax.text(j, i, result[i,j], size=16, **params)
+                    else:
+                        ax.text(j, i, size=10, **params, s=''.join(
+                                sorted([str(x) for x in elem.pool])))
+                elif isinstance(elem, tuple):
+                    result[i, j] = -1
+                    ax.text(j, i, elem[2], size=12, color='grey', **params)
+        ax.imshow(np.sign(result), cmap='Pastel1')
+        ax.xaxis.set_ticks_position('top')
+        positions, labels = range(len(A)), range(1, len(A)+1)
+        plt.xticks(positions, labels, size=12)
+        plt.yticks(positions, labels, size=12)
+        plt.show()
+        plt.close()
+        self.time['total'] = time() - self.time['start']
+        resultLog = '%s (%d cells)' % (self, len(self.cells)) + \
+            '\nTotal time elapsed: %.4fs' % self.time['total']
+        print(resultLog)
+        logging.info(resultLog + '\n' + '*'*50)
 
-	def check_mat():
-		"""Checks if current trial value matrix is the solution"""
-		vecCorrect = []
-		for vec in Rows + Cols:
-			trials = [cell.trialVal for cell in vec.cells]
-			if any([val not in digits for val in trials]): # any row/col member not in [1,9]
-				vecCorrect.append(False)
-			elif len(trials) != len(set(trials)): # duplicate values in row/col
-				vecCorrect.append(False)
-			elif sum(trials) != vec.Sum: # sum of vector members not equal to vector sum
-				vecCorrect.append(False)
-			else:
-				vecCorrect.append(True)
-		if all(vecCorrect): # if all rows & cols satisfy the design constraints
-			return True
-		else:
-			return False
+    def check_solution(self):
+        """Check if the current state is the correct (unique) solution"""
+        for v in self.vects:
+            if v.total != sum([c.val for c in v.cells()]):
+                return False
+        for c in self.cells:
+            if c.val == 0:
+                return False
+        return True
 
-	tNC = time.clock()
-	for j in range(nComb): # try each combination
-		# Jugaadu progress bar
-		t7 = time.clock()
-		if int(j/nComb*100) == perc:
-			tOp = time.clock() - tOp
-			print('{:3}%: j= {:}  t= {:.4}  nCompl= {:}'.format(perc,j,tOp,n2var))
-			perc += 1
-		tPerc += time.clock() - t7
+    def solve(self, numIter=3, firstTime=False):
+        """Main solution step for shrinking the pools and solving as many
+        cells as possible"""
+        for v in self.vects:
+            v.filter_poolmap(self.poolmap)
+        for _ in range(numIter):
+            for v in self.vects:  v.complement_tup2()
+            for v in self.vects:  v.min_max_check()
+            for v in self.vects:  v.paired_uncertainty()
+            for v in self.vects:  v.solve_tup1()
+            for c in self.cells:  c.deterministic_solve()
+        if firstTime:
+            self.time['first_solve'] = time() - self.time['start']
+            self.save_state()
+        self.solved = self.check_solution()
+        if self.solved:
+            self.time['solve'] = time() - self.time['start']
+            self.print_state()
 
-		t8 = time.clock()
-		C = np.array(next(comb))
-		pairBreak = False # break current loop if this is true
-		tNext += time.clock() - t8
-		t2 = time.clock()
-	# Type I: a != b
-		# for tup in pairIneqs: # remove combinations that make for simult. equality
-		# 	if C[tup[0]] == C[tup[1]]:
-	# Type II: a - b != k
-		# for tup in pairIneqs:
-		# 	if C[tup[0]] - C[tup[1]] == C[tup[2]]:
-	# Type III: k1*a + k2*b + k0 != 0
-		for T in pairIneqs: # two member expressions cannot be equal
-			if C[T['x1']]*T['k1'] - C[T['x2']]*T['k2'] + T['k0'] == 0:
-				pairBreak = True
-				break
-		t2var += time.clock() - t2
-		if pairBreak:
-			n2var += 1
-			continue
-		
-		t3 = time.clock()
-		for cell in flatList:
-			cell.try_sol(C)
-		tTry += time.clock() - t3
-		t4 = time.clock()
-		isCorrect = check_mat() # is this the required solution
-		tCheck += time.clock() - t4
-		if isCorrect:
-			print_mat(A)
-			print('Stopped at j =',j)
-			break
-	tNC = time.clock() - tNC
-	tt = time.clock() - t0
-	if print_stats:
-		print('No. of operations removed due to compl. =',n2var)
-		print('Preprocessing time = {:.4}'.format(tPre))
-		print('Time in calculating %. completed = {:.4}'.format(tPerc))
-		print('Time taken in removing 2-var dependencies = {:.4}'.format(t2var))
-		print('Time in calculating next combination through generator = {:.4}'.format(tNext))
-		print('Time taken in calculating trial values = {:.4}'.format(tTry))
-		print('Time taken in checking matrix combination = {:.4}'.format(tCheck))
-		print('Total time in numerical computation = {:.4}'.format(tNC))
-		print('Total time = {:.4}'.format(tt))
+    def try_solve(self, nTryVect):
+        """Try solving the problem by trying all feasible combinations on 
+        at most a given number of high-combination vectors"""
+        fcSizes = [len(v.feasible_combs()) for v in self.vects]
+        priorV = sorted(enumerate(fcSizes), key=lambda x: x[1], reverse=True)
+        for vi, _ in priorV[:nTryVect]:
+            v = self.vects[vi]
+            fc = v.feasible_combs()
+            print('Trying %s (#fc=%d)' % (v, len(fc)))
+            for f in fc:
+                self.reset_state()
+                for i, c in enumerate(v.cells()):
+                    c.pool = {f[i]}
+                try:
+                    self.solve()
+                    if self.solved:
+                        return
+                except ValueError:
+                    logging.warning('f:%s: value error on %s' % (str(f), v))
+            self.reset_state()
+        self.time['try_solve'] = time() - self.time['start']
+        print('Solution not found :( *_*')
+        print('Time elapsed: %.4f' % self.time['try_solve'])
 
-# Uncomment to see the code in action
-# main(fileName = r'Problems\easy2.csv', print_stats=True)
+# Example problem (uncomment and run file to see) *****************************
+#p = Problem('Problems/hard2.csv')
